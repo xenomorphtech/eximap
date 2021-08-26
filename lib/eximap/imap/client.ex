@@ -11,23 +11,23 @@ defmodule Eximap.Imap.Client do
   @initial_state %{
     socket: nil,
     tag_number: 1,
-    host: host,
-    port: port,
-    account: account,
-    pass: pass,
-    proxy: nil
+    host: "outlook.office365.com",
+    port: 993,
+    account: "example",
+    pass: "example",
+    proxy: nil 
   }
   @literal ~r/{([0-9]*)}\r\n/s
 
   def start_link(st) do
-    GenServer.start_link(__MODULE__, @initial_state)
+    GenServer.start_link(__MODULE__, st)
   end
 
-  def init(state(%{host: host, port: port, account: account, pass: pass, proxy: proxy})) do
+  def init(state = %{host: host, port: port, account: account, pass: pass, proxy: proxy}) do
     opts = [:binary, active: false]
 
     # todo: Hardcoded SSL connection until I implement the Authentication algorithms to allow login over :gen_tcp
-    # host = outlook.office365.com
+    # host = 
     # port = 993
     proxy = Proxy.packetstream_dynamic(%{session: "43234"})
     {:ok, socket} = Socket.connect(false, :binary.bin_to_list(proxy.ip), proxy.port, opts)
