@@ -15,7 +15,7 @@ defmodule Eximap.Imap.Client do
     port: 993,
     account: "example",
     pass: "example",
-    proxy: nil 
+    proxy: nil
   }
   @literal ~r/{([0-9]*)}\r\n/s
 
@@ -26,41 +26,56 @@ defmodule Eximap.Imap.Client do
   def init(state = %{host: host, port: port, account: account, pass: pass, proxy: proxy}) do
     opts = [:binary, active: false]
 
+    timeout = 30000
+
     # todo: Hardcoded SSL connection until I implement the Authentication algorithms to allow login over :gen_tcp
     # host = 
     # port = 993
-    proxy = Proxy.packetstream_dynamic(%{session: "43234"})
-    {:ok, socket} = Socket.connect(false, :binary.bin_to_list(proxy.ip), proxy.port, opts)
+    {:ok, socket} =
+      case proxy do
+        %{type: :http} ->
+          {:ok, socket} = Socket.connect(false, :binary.bin_to_list(proxy.ip), proxy.port, opts)
 
-    timeout = 30000
+          base64 = Base.encode64(<<proxy.username::binary, ":", proxy.password::binary>>)
+          proxy_auth = <<"Basic ", base64::binary>>
+          # proxy_auth = "Proxy-Authorization" <> proxyAuth
 
-    base64 = Base.encode64(<<proxy.username::binary, ":", proxy.password::binary>>)
-    proxy_auth = <<"Basic ", base64::binary>>
-    # proxy_auth = "Proxy-Authorization" <> proxyAuth
+          hostPort = <<host::binary, ":", Integer.to_string(port)::binary>>
+          pConn = <<"keep-alive">>
 
-    hostPort = <<host::binary, ":", Integer.to_string(port)::binary>>
-    pConn = <<"keep-alive">>
+          proxyRequestBin = [
+            "CONNECT ",
+            hostPort,
+            " HTTP/1.1\r\n",
+            "Host: ",
+            hostPort,
+            "\r\n",
+            "Proxy-Authorization: ",
+            proxy_auth,
+            "\r\n",
+            "Proxy-Connection: ",
+            pConn,
+            "\r\n\r\n"
+          ]
 
-    proxyRequestBin = [
-      "CONNECT ",
-      hostPort,
-      " HTTP/1.1\r\n",
-      "Host: ",
-      hostPort,
-      "\r\n",
-      "Proxy-Authorization: ",
-      proxy_auth,
-      "\r\n",
-      "Proxy-Connection: ",
-      pConn,
-      "\r\n\r\n"
-    ]
+          IO.inspect(proxyRequestBin)
 
-    IO.inspect(proxyRequestBin)
+          :gen_tcp.send(socket, proxyRequestBin)
 
-    :gen_tcp.send(socket, proxyRequestBin)
+          {ok, 200, _headers, _peplyBody} = :comsat_core_http.get_response(socket, timeout)
+          {:ok, socket}
 
-    {ok, 200, _headers, _peplyBody} = :comsat_core_http.get_response(socket, timeout)
+        %{type: :sock5} ->
+          {:ok, socket} = Socket.connect(false, :binary.bin_to_list(proxy.ip), proxy.port, opts)
+
+          :ok =
+            :comsat_socks5.do_server_handshake(host, port, socket, :undefined, :undefined, 30000)
+
+          {:ok, socket}
+
+        _ ->
+          {:ok, socket} = Socket.connect(false, :binary.bin_to_list(proxy.ip), proxy.port, opts)
+      end
 
     ssl_options = []
     {ok, socket} = :ssl.connect(socket, ssl_options, timeout)
@@ -72,8 +87,18 @@ defmodule Eximap.Imap.Client do
 
     # login using the account name and password
     req = Request.login(account, pass) |> Request.add_tag("EX_LGN")
-    imap_send(socket, req)
-    {:ok, %{state | socket: socket}}
+    res = imap_send(socket, req)
+    IO.inspect(res)
+
+    case res do
+      %Eximap.Imap.Response{
+        message: "LOGIN failed."
+      } ->
+        {:error, :login_failed}
+
+      _ ->
+        {:ok, %{state | socket: socket}}
+    end
   end
 
   def execute(pid, req) do
@@ -81,11 +106,11 @@ defmodule Eximap.Imap.Client do
   end
 
   def handle_call(
-        {:command, %Request{} = req},
+        {:command, %{} = req},
         _from,
         %{socket: socket, tag_number: tag_number} = state
       ) do
-    resp = imap_send(socket, %Request{req | tag: "EX#{tag_number}"})
+    resp = imap_send(socket, %Eximap.Imap.Request{req | tag: "EX#{tag_number}"})
     {:reply, resp, %{state | tag_number: tag_number + 1}}
   end
 
@@ -112,7 +137,7 @@ defmodule Eximap.Imap.Client do
   defp imap_receive(socket, req) do
     msg = assemble_msg(socket, req.tag)
     # IO.inspect("R: #{msg}")
-    %Response{request: req} |> parse_message(msg)
+    %Eximap.Imap.Response{request: req} |> parse_message(msg)
   end
 
   # assemble a complete message
