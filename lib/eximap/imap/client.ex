@@ -74,7 +74,7 @@ defmodule Eximap.Imap.Client do
           {:ok, socket}
 
         _ ->
-          {:ok, socket} = Socket.connect(false, :binary.bin_to_list(proxy.ip), proxy.port, opts)
+          {:ok, socket} = Socket.connect(false, :binary.bin_to_list(host), port, opts)
       end
 
     ssl_options = []
