@@ -88,7 +88,7 @@ defmodule Eximap.Imap.Client do
     # login using the account name and password
     req = Request.login(account, pass) |> Request.add_tag("EX_LGN")
     res = imap_send(socket, req)
-    IO.inspect(res)
+    IO.inspect({:login, res})
 
     case res do
       %Eximap.Imap.Response{
