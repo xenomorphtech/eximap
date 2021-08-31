@@ -23,7 +23,18 @@ defmodule Eximap.Imap.Client do
     GenServer.start_link(__MODULE__, st)
   end
 
-  def init(state = %{host: host, port: port, account: account, pass: pass, proxy: proxy}) do
+  def init(state) do
+    {:ok, state}
+  end
+
+  def handle_call(
+        {:login, params},
+        _from,
+        state
+      ) do
+    %{host: host, port: port, account: account, pass: pass} = params
+    proxy = Map.get(params, :proxy, nil)
+
     opts = [:binary, active: false]
 
     timeout = 30000
@@ -80,7 +91,7 @@ defmodule Eximap.Imap.Client do
     ssl_options = []
     {ok, socket} = :ssl.connect(socket, ssl_options, timeout)
 
-    state = %{state | socket: socket}
+    state = %{params | socket: socket}
 
     # todo: parse the server attributes and store them in the state
     imap_receive_raw(socket)
@@ -93,10 +104,10 @@ defmodule Eximap.Imap.Client do
       %Eximap.Imap.Response{
         message: "LOGIN failed."
       } ->
-        {:error, :login_failed}
+        {:reply, {:error, :wrong_credentials}, state}
 
       _ ->
-        {:ok, %{state | socket: socket}}
+        {:reply, :ok, %{state | socket: socket}}
     end
   end
 
