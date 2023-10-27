@@ -1,6 +1,6 @@
 defmodule Eximap do
   @moduledoc """
-  Documentation for Eximap.
+  Documentation for `Eximap`.
   """
 
   @doc """
@@ -8,7 +8,7 @@ defmodule Eximap do
 
   ## Examples
 
-      iex> Eximap.hello
+      iex> Eximap.hello()
       :world
 
   """

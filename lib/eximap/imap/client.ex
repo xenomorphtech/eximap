@@ -6,7 +6,6 @@ defmodule Eximap.Imap.Client do
 
   @moduledoc """
   Imap Client GenServer
-  """
 
   @initial_state %{
     socket: nil,
@@ -17,6 +16,7 @@ defmodule Eximap.Imap.Client do
     pass: "example",
     proxy: nil
   }
+  """
   @literal ~r/{([0-9]*)}\r\n/s
 
   def start_link(st) do
@@ -28,83 +28,117 @@ defmodule Eximap.Imap.Client do
   end
 
   def handle_call(
+        {:command, %{} = req},
+        _from,
+        %{socket: socket, tag_number: tag_number} = state
+      ) do
+    resp =
+      try do
+        imap_send(socket, %Eximap.Imap.Request{req | tag: "EX#{tag_number}"})
+      catch
+        a, b -> {:error, {a, b}}
+      end
+
+    {:reply, resp, %{state | tag_number: tag_number + 1}}
+  end
+
+  def handle_call(
         {:login, params},
         _from,
-        state
+        _state
       ) do
     %{host: host, port: port, account: account, pass: pass} = params
     proxy = Map.get(params, :proxy, nil)
 
-    opts = [:binary, active: false]
+    opts = [:binary, {:active, false}]
 
     timeout = 30000
 
     # todo: Hardcoded SSL connection until I implement the Authentication algorithms to allow login over :gen_tcp
     # host = 
     # port = 993
-    {:ok, socket} =
-      case proxy do
-        %{type: :http} ->
-          {:ok, socket} = Socket.connect(false, :binary.bin_to_list(proxy.ip), proxy.port, opts)
+    {res, socket, state} =
+      try do
+        {:ok, socket} =
+          case proxy do
+            %{type: :http} ->
+              {:ok, socket} =
+                Socket.connect(false, :binary.bin_to_list(proxy.ip), proxy.port, opts)
 
-          base64 = Base.encode64(<<proxy.username::binary, ":", proxy.password::binary>>)
-          proxy_auth = <<"Basic ", base64::binary>>
-          # proxy_auth = "Proxy-Authorization" <> proxyAuth
+              base64 = Base.encode64(<<proxy.username::binary, ":", proxy.password::binary>>)
+              proxy_auth = <<"Basic ", base64::binary>>
+              # proxy_auth = "Proxy-Authorization" <> proxyAuth
 
-          hostPort = <<host::binary, ":", Integer.to_string(port)::binary>>
-          pConn = <<"keep-alive">>
+              hostPort = <<host::binary, ":", Integer.to_string(port)::binary>>
+              pConn = <<"keep-alive">>
 
-          proxyRequestBin = [
-            "CONNECT ",
-            hostPort,
-            " HTTP/1.1\r\n",
-            "Host: ",
-            hostPort,
-            "\r\n",
-            "Proxy-Authorization: ",
-            proxy_auth,
-            "\r\n",
-            "Proxy-Connection: ",
-            pConn,
-            "\r\n\r\n"
-          ]
+              proxyRequestBin = [
+                "CONNECT ",
+                hostPort,
+                " HTTP/1.1\r\n",
+                "Host: ",
+                hostPort,
+                "\r\n",
+                "Proxy-Authorization: ",
+                proxy_auth,
+                "\r\n",
+                "Proxy-Connection: ",
+                pConn,
+                "\r\n\r\n"
+              ]
 
-          IO.inspect(proxyRequestBin)
+              # IO.inspect(proxyRequestBin)
 
-          :gen_tcp.send(socket, proxyRequestBin)
+              :gen_tcp.send(socket, proxyRequestBin)
 
-          {ok, 200, _headers, _peplyBody} = :comsat_core_http.get_response(socket, timeout)
-          {:ok, socket}
+              {:ok, 200, _headers, _peplyBody} = :comsat_core_http.get_response(socket, timeout)
+              {:ok, socket}
 
-        %{type: :sock5} ->
-          {:ok, socket} = Socket.connect(false, :binary.bin_to_list(proxy.ip), proxy.port, opts)
+            %{type: :sock5} ->
+              {:ok, socket} =
+                Socket.connect(false, :binary.bin_to_list(proxy.ip), proxy.port, opts)
 
-          :ok =
-            :comsat_socks5.do_server_handshake(host, port, socket, :undefined, :undefined, 30000)
+              :ok =
+                :comsat_socks5.do_server_handshake(
+                  host,
+                  port,
+                  socket,
+                  :undefined,
+                  :undefined,
+                  30000
+                )
 
-          {:ok, socket}
+              {:ok, socket}
 
-        _ ->
-          {:ok, socket} = Socket.connect(false, :binary.bin_to_list(host), port, opts)
+            _ ->
+              {:ok, _socket} = Socket.connect(false, :binary.bin_to_list(host), port, opts)
+          end
+
+        ssl_options = [verify_type: :verify_none, log_level: :none, mode: :binary, active: false]
+        {:ok, socket} = :ssl.connect(socket, ssl_options, timeout)
+
+        state = %{params | socket: socket}
+
+        # todo: parse the server attributes and store them in the state
+        imap_receive_raw(socket)
+
+        # login using the account name and password
+        req = Request.login(account, pass) |> Request.add_tag("EX_LGN")
+        res = imap_send(socket, req)
+        {res, socket, state}
+      catch
+        a, b ->
+          {{:error, {a, b}}, nil, params}
       end
-
-    ssl_options = []
-    {ok, socket} = :ssl.connect(socket, ssl_options, timeout)
-
-    state = %{params | socket: socket}
-
-    # todo: parse the server attributes and store them in the state
-    imap_receive_raw(socket)
-
-    # login using the account name and password
-    req = Request.login(account, pass) |> Request.add_tag("EX_LGN")
-    res = imap_send(socket, req)
 
     case res do
       %Eximap.Imap.Response{
         message: "LOGIN failed."
       } ->
         {:reply, {:error, :wrong_credentials}, state}
+
+      {:error, err} ->
+        {:reply, err, state}
 
       _ ->
         {:reply, :ok, %{state | socket: socket}}
@@ -113,15 +147,6 @@ defmodule Eximap.Imap.Client do
 
   def execute(pid, req) do
     GenServer.call(pid, {:command, req})
-  end
-
-  def handle_call(
-        {:command, %{} = req},
-        _from,
-        %{socket: socket, tag_number: tag_number} = state
-      ) do
-    resp = imap_send(socket, %Eximap.Imap.Request{req | tag: "EX#{tag_number}"})
-    {:reply, resp, %{state | tag_number: tag_number + 1}}
   end
 
   def handle_info(resp, state) do
